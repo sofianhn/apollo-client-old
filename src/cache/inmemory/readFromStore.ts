@@ -80,9 +80,20 @@ type ExecSubSelectedArrayOptions = {
 export interface StoreReaderConfig {
   cache: InMemoryCache,
   addTypename?: boolean;
+  resultCachMaxSize?: number;
 }
 
 export class StoreReader {
+  private wrappedExecuteSubSelectedArray: OptimisticWrapperFunction<
+    [ExecSubSelectedArrayOptions],
+    ExecResult<any>,
+    [ExecSubSelectedArrayOptions]> | null;
+
+  private wrappedExecuteSelectionSet: OptimisticWrapperFunction<
+    [ExecSelectionSetOptions], // Actual arguments tuple type.
+    ExecResult, // Actual return type.
+    // Arguments type after keyArgs translation.
+    [SelectionSetNode, StoreObject | Reference, ReadMergeModifyContext]> | null;
   constructor(private config: StoreReaderConfig) {
     this.config = { addTypename: true, ...config };
   }
@@ -144,7 +155,7 @@ export class StoreReader {
   ): boolean {
     if (supportsResultCaching(context.store) &&
         this.knownResults.get(result) === selectionSet) {
-      const latest = this.executeSelectionSet.peek(selectionSet, parent, context);
+      const latest = this.wrappedExecuteSelectionSet?.peek(selectionSet, parent, context);
       if (latest && result === latest.result) {
         return true;
       }
@@ -152,32 +163,32 @@ export class StoreReader {
     return false;
   }
 
-  // Cached version of execSelectionSetImpl.
-  private executeSelectionSet: OptimisticWrapperFunction<
-    [ExecSelectionSetOptions], // Actual arguments tuple type.
-    ExecResult, // Actual return type.
-    // Arguments type after keyArgs translation.
-    [SelectionSetNode, StoreObject | Reference, ReadMergeModifyContext]
-  > = wrap(options => this.execSelectionSetImpl(options), {
-    keyArgs(options) {
-      return [
-        options.selectionSet,
-        options.objectOrReference,
-        options.context,
-      ];
-    },
-    // Note that the parameters of makeCacheKey are determined by the
-    // array returned by keyArgs.
-    makeCacheKey(selectionSet, parent, context) {
-      if (supportsResultCaching(context.store)) {
-        return context.store.makeCacheKey(
-          selectionSet,
-          isReference(parent) ? parent.__ref : parent,
-          context.varString,
-        );
-      }
+  private executeSelectionSet(options: ExecSelectionSetOptions) {
+    if (!this.wrappedExecuteSelectionSet) {
+      this.wrappedExecuteSelectionSet = wrap(options => this.execSelectionSetImpl(options), {
+        keyArgs(options) {
+          return [
+            options.selectionSet,
+            options.objectOrReference,
+            options.context,
+          ];
+        },
+        max: this.config.resultCachMaxSize,
+        // Note that the parameters of makeCacheKey are determined by the
+        // array returned by keyArgs.
+        makeCacheKey(selectionSet, parent, context) {
+          if (supportsResultCaching(context.store)) {
+            return context.store.makeCacheKey(
+              selectionSet,
+              isReference(parent) ? parent.__ref : parent,
+              context.varString,
+            );
+          }
+        }
+      });
     }
-  });
+    return this.wrappedExecuteSelectionSet(options);
+  }
 
   // Uncached version of executeSelectionSet.
   private execSelectionSetImpl({
@@ -340,19 +351,25 @@ export class StoreReader {
   private knownResults = new WeakMap<Record<string, any>, SelectionSetNode>();
 
   // Cached version of execSubSelectedArrayImpl.
-  private executeSubSelectedArray = wrap((options: ExecSubSelectedArrayOptions) => {
-    return this.execSubSelectedArrayImpl(options);
-  }, {
-    makeCacheKey({ field, array, context }) {
-      if (supportsResultCaching(context.store)) {
-        return context.store.makeCacheKey(
-          field,
-          array,
-          context.varString,
-        );
-      }
+  private executeSubSelectedArray(options: ExecSubSelectedArrayOptions) {
+    if (!this.wrappedExecuteSubSelectedArray) {
+      this.wrappedExecuteSubSelectedArray =  wrap((options: ExecSubSelectedArrayOptions) => {
+        return this.execSubSelectedArrayImpl(options);
+      }, {
+        max: this.config.resultCachMaxSize,
+        makeCacheKey({ field, array, context }) {
+          if (supportsResultCaching(context.store)) {
+            return context.store.makeCacheKey(
+              field,
+              array,
+              context.varString,
+            );
+          }
+        }
+      });
     }
-  });
+    return this.wrappedExecuteSubSelectedArray(options);
+  }
 
   // Uncached version of executeSubSelectedArray.
   private execSubSelectedArrayImpl({
