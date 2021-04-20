@@ -1,0 +1,47 @@
+diff --git a/node_modules/optimism/lib/bundle.cjs.js b/node_modules/optimism/lib/bundle.cjs.js
+index 26e4f9e..eaf15bf 100644
+--- a/node_modules/optimism/lib/bundle.cjs.js
++++ b/node_modules/optimism/lib/bundle.cjs.js
+@@ -458,6 +458,12 @@ function wrap(originalFunction, options) {
+         var key = makeCacheKey.apply(null, arguments);
+         return key !== void 0 && cache.delete(key);
+     };
++    optimistic.getKey = function () {
++      return makeCacheKey.apply(null, keyArgs ? keyArgs.apply(null, arguments) : arguments);
++    };
++    optimistic.forgetKey = function (key) {
++      return key !== void 0 && cache.delete(key);
++    };
+     return optimistic;
+ }
+ 
+diff --git a/node_modules/optimism/lib/bundle.esm.js b/node_modules/optimism/lib/bundle.esm.js
+index 02bc3e5..05e30fc 100644
+--- a/node_modules/optimism/lib/bundle.esm.js
++++ b/node_modules/optimism/lib/bundle.esm.js
+@@ -456,6 +456,12 @@ function wrap(originalFunction, options) {
+         var key = makeCacheKey.apply(null, arguments);
+         return key !== void 0 && cache.delete(key);
+     };
++    optimistic.getKey = function () {
++      return makeCacheKey.apply(null, keyArgs ? keyArgs.apply(null, arguments) : arguments);
++    };
++    optimistic.forgetKey = function (key) {
++      return key !== void 0 && cache.delete(key);
++    };
+     return optimistic;
+ }
+ 
+diff --git a/node_modules/optimism/lib/index.d.ts b/node_modules/optimism/lib/index.d.ts
+index e945216..5676430 100644
+--- a/node_modules/optimism/lib/index.d.ts
++++ b/node_modules/optimism/lib/index.d.ts
+@@ -8,6 +8,8 @@ export declare type OptimisticWrapperFunction<TArgs extends any[], TResult, TKey
+     dirty: (...args: TKeyArgs) => void;
+     peek: (...args: TKeyArgs) => TResult | undefined;
+     forget: (...args: TKeyArgs) => boolean;
++    getKey: (...args: TArgs) => any;
++    forgetKey: (key: any) => boolean;
+ };
+ export declare type OptimisticWrapOptions<TArgs extends any[], TKeyArgs extends any[] = TArgs> = {
+     max?: number;
