@@ -2,7 +2,7 @@
 import './fixPolyfills';
 
 import { DocumentNode } from 'graphql';
-import { dep, wrap } from 'optimism';
+import { dep, OptimisticWrapperFunction, wrap } from 'optimism';
 
 import { ApolloCache } from '../core/cache';
 import { Cache } from '../core/types/Cache';
@@ -33,6 +33,7 @@ export interface InMemoryCacheConfig extends ApolloReducerConfig {
   resultCaching?: boolean;
   possibleTypes?: PossibleTypesMap;
   typePolicies?: TypePolicies;
+  resultCachMaxSize?: number;
 }
 
 const defaultConfig: InMemoryCacheConfig = {
@@ -53,6 +54,11 @@ export class InMemoryCache extends ApolloCache<NormalizedCacheObject> {
   private typenameDocumentCache = new Map<DocumentNode, DocumentNode>();
   private storeReader: StoreReader;
   private storeWriter: StoreWriter;
+
+  private maybeBroadcastWatch: OptimisticWrapperFunction<
+    [Cache.WatchOptions, boolean?],
+    any,
+    [Cache.WatchOptions]>;
 
   // Dynamically imported code can augment existing typePolicies or
   // possibleTypes by calling cache.policies.addTypePolicies or
@@ -93,8 +99,37 @@ export class InMemoryCache extends ApolloCache<NormalizedCacheObject> {
       this.storeReader = new StoreReader({
         cache: this,
         addTypename: this.addTypename,
+        resultCachMaxSize: this.config.resultCachMaxSize,
       }),
     );
+
+    this.maybeBroadcastWatch = wrap((
+      c: Cache.WatchOptions,
+      fromOptimisticTransaction?: boolean,
+    ) => {
+      return this.broadcastWatch.call(this, c, !!fromOptimisticTransaction);
+    }, {
+      max: this.config.resultCachMaxSize,
+      makeCacheKey: (c: Cache.WatchOptions) => {
+        // Return a cache key (thus enabling result caching) only if we're
+        // currently using a data store that can track cache dependencies.
+        const store = c.optimistic ? this.optimisticData : this.data;
+        if (supportsResultCaching(store)) {
+          const { optimistic, rootId, variables } = c;
+          return store.makeCacheKey(
+            c.query,
+            // Different watches can have the same query, optimistic
+            // status, rootId, and variables, but if their callbacks are
+            // different, the (identical) result needs to be delivered to
+            // each distinct callback. The easiest way to achieve that
+            // separation is to include c.callback in the cache key for
+            // maybeBroadcastWatch calls. See issue #5733.
+            c.callback,
+            JSON.stringify({ optimistic, rootId, variables }),
+          );
+        }
+      }
+    });
   }
 
   public restore(data: NormalizedCacheObject): this {
@@ -367,33 +402,6 @@ export class InMemoryCache extends ApolloCache<NormalizedCacheObject> {
       this.watches.forEach(c => this.maybeBroadcastWatch(c, fromOptimisticTransaction));
     }
   }
-
-  private maybeBroadcastWatch = wrap((
-    c: Cache.WatchOptions,
-    fromOptimisticTransaction?: boolean,
-  ) => {
-    return this.broadcastWatch.call(this, c, !!fromOptimisticTransaction);
-  }, {
-    makeCacheKey: (c: Cache.WatchOptions) => {
-      // Return a cache key (thus enabling result caching) only if we're
-      // currently using a data store that can track cache dependencies.
-      const store = c.optimistic ? this.optimisticData : this.data;
-      if (supportsResultCaching(store)) {
-        const { optimistic, rootId, variables } = c;
-        return store.makeCacheKey(
-          c.query,
-          // Different watches can have the same query, optimistic
-          // status, rootId, and variables, but if their callbacks are
-          // different, the (identical) result needs to be delivered to
-          // each distinct callback. The easiest way to achieve that
-          // separation is to include c.callback in the cache key for
-          // maybeBroadcastWatch calls. See issue #5733.
-          c.callback,
-          JSON.stringify({ optimistic, rootId, variables }),
-        );
-      }
-    }
-  });
 
   private watchDep = dep<Cache.WatchOptions>();
 

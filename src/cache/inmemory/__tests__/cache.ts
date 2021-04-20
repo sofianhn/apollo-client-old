@@ -1421,6 +1421,120 @@ describe('Cache', () => {
       expect(numBroadcasts).toEqual(1);
     });
   });
+
+  describe('config', () => {
+    function setupTestData(config?: InMemoryCacheConfig) {
+      const cache = new InMemoryCache({
+        typePolicies: {
+          Query: {
+            fields: {
+              book: {
+                keyArgs: [ "isbn" ],
+              }
+            }
+          },
+          Book: {
+            keyFields: ["isbn"],
+          },
+        },
+        ...config,
+      });
+
+      const query = gql`
+        query GetBook($isbn: String!) {
+          book(isbn: $isbn) {
+            title
+          }
+        }
+      `;
+
+      function writeValue(i: number) {
+        const isbn = i;
+        const title = `Book number: ${i}`;
+        cache.writeQuery({
+          query,
+          variables: { isbn },
+          data: {
+            book: {
+              __typename: "Book",
+              title,
+              isbn,
+            },
+          },
+        });
+      }
+
+      function readValue(i : number) {
+        return cache.readQuery({ query, variables: { isbn: i } });
+      }
+
+      return { writeValue, readValue };
+    }
+
+    it("should return the same result when resultCaching is enabled (default)", () => {
+      const { writeValue, readValue } = setupTestData();
+
+      /*
+       * Write the first value.
+       */
+      writeValue(0);
+      const result1 = readValue(0);
+      const result2 = readValue(0);
+
+      /*
+       * Verify that the values matchs.
+       */
+      expect(result2).toBe(result1);
+    });
+
+    it("should return the different result when resultCaching is disabled", () => {
+      const { writeValue, readValue } = setupTestData({ resultCaching: false });
+
+      /*
+       * Write the first value.
+       */
+      writeValue(0);
+      const result1 = readValue(0);
+      const result2 = readValue(0);
+
+      /*
+       * Verify that the values are different.
+       */
+      expect(result2).not.toBe(result1);
+    });
+
+    it("should set cache limit when resultCachMaxSize is set", () => {
+      const resultCachMaxSize = 100;
+      const { writeValue, readValue } = setupTestData({ resultCachMaxSize });
+
+      let i = 0;
+      /*
+       * Write the first value.
+       */
+      writeValue(i);
+      const result1 = readValue(0);
+      let result2 = readValue(0);
+
+      /*
+       * Verify that initially the values matchs.
+       */
+      expect(result2).toBe(result1);
+
+      /*
+       * Keep writing new values and reading them until the cache limit hits
+       * and the first query is no longer in the cache, if exceeded the max
+       * size and the value are still equal, fail early as we don't need to wait
+       * to timeout.
+       */
+      while (result2 === result1 && i < resultCachMaxSize) {
+        i++;
+        writeValue(i);
+        readValue(i);
+        result2 = readValue(0);
+      }
+      expect(result2).not.toBe(result1);
+    });
+  });
 });
 
 describe("InMemoryCache#broadcastWatches", function () {
