@@ -4,7 +4,7 @@ import gql from 'graphql-tag';
 import { stripSymbols } from '../../../utilities/testing/stripSymbols';
 import { StoreObject } from '../types';
 import { StoreReader } from '../readFromStore';
-import { makeReference, InMemoryCache, Reference, isReference } from '../../../core';
+import { makeReference, InMemoryCache, Reference, isReference, InMemoryCacheConfig } from '../../../core';
 import { Cache } from '../../core/types/Cache';
 import { MissingFieldError } from '../../core/types/common';
 import { defaultNormalizedCacheFactory, readQueryFromStore } from './helpers';
@@ -1337,7 +1337,7 @@ describe('reading from the store', () => {
     });
   });
 
-  it("propagates eviction signals to parent queries", () => {
+  function getEvictionTestData(options: InMemoryCacheConfig = {}) {
     const cache = new InMemoryCache({
       typePolicies: {
         Deity: {
@@ -1363,6 +1363,7 @@ describe('reading from the store', () => {
           },
         },
       },
+      ...options,
     });
 
     const rulerQuery = gql`
@@ -1421,6 +1422,31 @@ describe('reading from the store', () => {
       });
     }
 
+    function evictAndGC(name: string) {
+      /*
+       * The number of evicted entries is 1 (the evicted entry) + the number of
+       * gc'ed entries.
+       */
+      let evicted = 1;
+      cache.evict({
+        id: cache.identify({ __typename: "Deity", name }),
+      });
+      evicted += cache.gc().length;
+      return evicted;
+    }
+
+    return {
+      watch,
+      cache,
+      rulerQuery,
+      diffs,
+      children,
+      evictAndGC,
+    };
+  }
+
+  it("propagates eviction signals to parent queries", () => {
+    const { watch, cache, rulerQuery, diffs, children } = getEvictionTestData();
     const cancel = watch();
 
     function devour(name: string) {
@@ -1826,5 +1852,64 @@ describe('reading from the store', () => {
         name: "Apollo",
       },
     });
+  });
+
+  it('clears cached entries when garbage collected', () => {
+    const { cache, rulerQuery, evictAndGC } = getEvictionTestData();
+
+    /*
+     * TODO: find a better way to spy on forgetKey.
+     */
+    const reader = (cache as any).storeReader;
+    const executeSelectionSetSpy = jest.spyOn((reader as any)['executeSelectionSet'], 'forgetKey');
+    const executeSubSelectedArraySpy = jest.spyOn((reader as any)['executeSubSelectedArray'], 'forgetKey');
+
+    cache.watch({
+      query: rulerQuery,
+      immediate: true,
+      optimistic: true,
+      callback: () => {},
+    });
+    expect(executeSelectionSetSpy).not.toBeCalled();
+    expect(executeSubSelectedArraySpy).not.toBeCalled();
+
+    /*
+     * Since each Deity entry has exactly one cache entry at this point we
+     * expect the forget count to match.
+     */
+    const evicted = evictAndGC('Cronus');
+    expect(executeSelectionSetSpy).toBeCalledTimes(evicted);
+    expect(executeSubSelectedArraySpy).toBeCalledTimes(evicted);
+  });
+
+  it('does not clear caches when resultCaching is disabled', () => {
+    const { cache, evictAndGC, rulerQuery } = getEvictionTestData({ resultCaching: false });
+    /*
+     * TODO: find a better way to spy.
+     */
+    const reader = (cache as any).storeReader;
+    const executeSelectionSetEvictionHandler = reader['executeSelectionSetEvictionHandlers'];
+    const executeSubSelectedEvictionHandler = reader['executeSubSelectedArrayEvictionHandlers'];
+    const executeSelectionSetSpy = jest.spyOn(reader['executeSelectionSet'], 'forgetKey');
+    const executeSubSelectedArraySpy = jest.spyOn(reader['executeSubSelectedArray'], 'forgetKey');
+
+    cache.watch({
+      query: rulerQuery,
+      immediate: true,
+      optimistic: true,
+      callback: () => {},
+    });
+    expect(executeSelectionSetSpy).not.toBeCalled();
+    expect(executeSubSelectedArraySpy).not.toBeCalled();
+
+    evictAndGC('Cronus');
+
+    /*
+     * Even after evicition no clearing happens since resultCaching is disabled.
+     */
+    expect(executeSelectionSetSpy).not.toBeCalled();
+    expect(executeSubSelectedArraySpy).not.toBeCalled();
+    expect(executeSelectionSetEvictionHandler.size).toEqual(0);
+    expect(executeSubSelectedEvictionHandler.size).toEqual(0);
   });
 });

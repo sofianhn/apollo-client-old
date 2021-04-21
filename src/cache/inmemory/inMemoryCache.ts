@@ -263,7 +263,9 @@ export class InMemoryCache extends ApolloCache<NormalizedCacheObject> {
 
   // Request garbage collection of unreachable normalized entities.
   public gc() {
-    return this.optimisticData.gc();
+    const evicted = this.optimisticData.gc();
+    this.storeReader.onEvict(evicted);
+    return evicted;
   }
 
   // Call this method to ensure the given root ID remains in the cache after
@@ -312,7 +314,11 @@ export class InMemoryCache extends ApolloCache<NormalizedCacheObject> {
       // this.txCount still seems like a good idea, for uniformity with
       // the other update methods.
       ++this.txCount;
-      return this.optimisticData.evict(options);
+      const evicted = this.optimisticData.evict(options);
+      if (evicted) {
+        this.storeReader.onEvict([ options.id! ]);
+      }
+      return evicted;
     } finally {
       if (!--this.txCount && options.broadcast !== false) {
         this.broadcastWatches();

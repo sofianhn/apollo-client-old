@@ -30,6 +30,7 @@ import {
   DiffQueryAgainstStoreOptions,
   NormalizedCache,
   ReadMergeModifyContext,
+  StoreValue,
 } from './types';
 import { supportsResultCaching } from './entityStore';
 import { getTypenameFromStoreObject } from './helpers';
@@ -75,6 +76,7 @@ type ExecSubSelectedArrayOptions = {
   field: FieldNode;
   array: any[];
   context: ReadContext;
+  ref: StoreValue;
 };
 
 export interface StoreReaderConfig {
@@ -98,10 +100,25 @@ export class StoreReader {
     ExecResult<any>,
     [ExecSubSelectedArrayOptions]>;
 
+  private executeSelectionSetEvictionHandlers: Map<StoreValue, any[]> = new Map();
+  private executeSubSelectedArrayEvictionHandlers: Map<StoreValue, any[]> = new Map();
+
   constructor(private config: StoreReaderConfig) {
     this.config = { addTypename: true, ...config };
 
-    this.executeSelectionSet = wrap(options => this.execSelectionSetImpl(options), {
+    this.executeSelectionSet = wrap(options => {
+      const key = this.executeSelectionSet.getKey(options);
+      if (key !== void 0) {
+        const ref = options.objectOrReference.__ref;
+        let handlers = this.executeSelectionSetEvictionHandlers.get(ref);
+        if (!handlers) {
+          handlers = [];
+          this.executeSelectionSetEvictionHandlers.set(ref, handlers);
+        }
+        handlers!.push(key);
+      }
+      return this.execSelectionSetImpl(options);
+    }, {
       keyArgs(options) {
         return [
           options.selectionSet,
@@ -122,8 +139,17 @@ export class StoreReader {
         }
       }
     });
-
-    this.executeSubSelectedArray =  wrap((options: ExecSubSelectedArrayOptions) => {
+    this.executeSubSelectedArray = wrap((options: ExecSubSelectedArrayOptions) => {
+      const key = this.executeSubSelectedArray.getKey(options);
+      if (key !== void 0) {
+        const ref = options.ref;
+        let handlers = this.executeSubSelectedArrayEvictionHandlers.get(ref);
+        if (!handlers) {
+          handlers = [];
+          this.executeSubSelectedArrayEvictionHandlers.set(ref, handlers);
+        }
+        handlers!.push(key);
+      }
       return this.execSubSelectedArrayImpl(options);
     }, {
       max: this.config.resultCachMaxSize,
@@ -136,6 +162,20 @@ export class StoreReader {
           );
         }
       }
+    });
+  }
+
+  public onEvict(evicted: string[]) {
+    evicted.forEach(dataId => {
+      this.executeSelectionSetEvictionHandlers.get(dataId)?.forEach((k) => {
+        this.executeSelectionSet.forgetKey(k);
+      });
+      this.executeSelectionSetEvictionHandlers.delete(dataId);
+
+      this.executeSubSelectedArrayEvictionHandlers.get(dataId)?.forEach((k) => {
+        this.executeSubSelectedArray.forgetKey(k);
+      });
+      this.executeSubSelectedArrayEvictionHandlers.delete(dataId);
     });
   }
 
@@ -300,6 +340,7 @@ export class StoreReader {
             field: selection,
             array: fieldValue,
             context,
+            ref: objectOrReference.__ref,
           }));
 
         } else if (!selection.selectionSet) {
@@ -369,6 +410,7 @@ export class StoreReader {
     field,
     array,
     context,
+    ref,
   }: ExecSubSelectedArrayOptions): ExecResult {
     let missing: MissingFieldError[] | undefined;
 
@@ -401,6 +443,7 @@ export class StoreReader {
           field,
           array: item,
           context,
+          ref,
         }), i);
       }
 
